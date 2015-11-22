@@ -5,7 +5,7 @@ import akka.pattern.ask
 import akka.util.Timeout
 import org.slf4j.LoggerFactory
 import scala.concurrent.duration._
-import scala.concurrent.{Promise, Await}
+import scala.concurrent.Await
 
 class HeavyResourceProducerActor extends Actor {
 
@@ -23,17 +23,16 @@ class HeavyResourceProducerActor extends Actor {
 }
 
 
-class HeavyResourceAwaitingActor extends Actor {
+class HeavyResourceAwaitingActor(sharedResource: ActorRef) extends Actor {
 
   implicit val timeout = Timeout(10.hours)
   val log = LoggerFactory.getLogger( getClass )
-  val blocked = context.system.actorOf(Main.heavyResourceProps)
 
   def receive: Receive = {
     case "consume" =>
       val s = sender
       log.info(s"going to block...")
-      val blockedFuture = blocked ? "produce"
+      val blockedFuture = sharedResource ? "produce"
       Await.result(blockedFuture, Duration.Inf)
       log.info(s"awaiting completed")
       s ! "consumed"
@@ -42,6 +41,30 @@ class HeavyResourceAwaitingActor extends Actor {
       log.info(s"unknown message -- [ $other ]")
   }
 }
+
+
+class HeavyResourceNonAwaitingActor(sharedResource: ActorRef) extends Actor {
+
+  import scala.concurrent.ExecutionContext.Implicits.global
+  implicit val timeout = Timeout(10.hours)
+  val log = LoggerFactory.getLogger( getClass )
+
+  def receive: Receive = {
+    case "consume" =>
+      val s = sender
+      log.info(s"not going to block...")
+      val blockedFuture = sharedResource ? "produce"
+      blockedFuture.foreach {
+        case "done" =>
+          log.info(s"non-awaiting completed")
+          s ! "non-waiting-consumed"
+      }
+
+    case other =>
+      log.info(s"unknown message -- [ $other ]")
+  }
+}
+
 
 class EchoActor extends Actor {
 
@@ -53,25 +76,38 @@ class EchoActor extends Actor {
   }
 }
 
+
 class Router extends Actor {
 
   val log = LoggerFactory.getLogger( getClass )
   val echor = context.system.actorOf(Main.echoProps)
+  val sharedResource = context.system.actorOf(Main.heavyResourceProps)
   var blockers = Set.empty[ActorRef]
+  var nonBlockers = Set.empty[ActorRef]
 
   def receive: Receive = {
     case "new" =>
-      log.info(s"adding another blocker (current total: ${blockers.size})...")
-      val blocker = context.system.actorOf(Main.awaitingProps)
+      log.info(s"adding blocker (current total: ${blockers.size})...")
+      val blocker = context.system.actorOf(Main.awaitingProps(sharedResource))
       blocker ! "consume"
       blockers = blockers + blocker
       log.info(s"added (current total: ${blockers.size})...")
+
+    case "new-no-await" =>
+      log.info(s"adding non-blocker (current total: ${nonBlockers.size})...")
+      val nonBlocker = context.system.actorOf(Main.nonAwaitingProps(sharedResource))
+      nonBlocker ! "consume"
+      nonBlockers += nonBlocker
+      log.info(s"added (current total: ${nonBlockers.size})...")
 
     case "show" =>
       log.info(s"current blockers (total: ${blockers.size}) -- [ $blockers ]")
 
     case "consumed" =>
-      blockers = blockers - sender
+      blockers -= sender
+
+    case "non-waiting-consumed" =>
+      nonBlockers -= sender
 
     case other =>
       echor forward other
@@ -79,11 +115,14 @@ class Router extends Actor {
 
 }
 
+
 object Main {
 
   val echoProps = Props( new EchoActor )
-  val awaitingProps = Props( new HeavyResourceAwaitingActor )
   val heavyResourceProps = Props( new HeavyResourceProducerActor )
+  def awaitingProps(resource: ActorRef) = Props( new HeavyResourceAwaitingActor( resource ) )
+  def nonAwaitingProps(resource: ActorRef) = Props( new HeavyResourceNonAwaitingActor( resource ) )
+
   val routerProps = Props( new Router )
 
   val system = ActorSystem.create("blockers-demo")
