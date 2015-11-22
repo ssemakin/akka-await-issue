@@ -1,22 +1,43 @@
 package akkaawaitissue
 
 import akka.actor.{ActorRef, ActorSystem, Props, Actor}
+import akka.pattern.ask
+import akka.util.Timeout
 import org.slf4j.LoggerFactory
-import scala.concurrent.duration.Duration
+import scala.concurrent.duration._
 import scala.concurrent.{Promise, Await}
+
+class BlockedActor extends Actor {
+
+  val log = LoggerFactory.getLogger( getClass )
+
+ 
+  def receive: Receive = {
+    case "hello" =>
+      val s = sender
+      Thread.sleep(10 * 60 * 1000)
+      s ! "hi"
+
+    case other =>
+      log.info(s"unknown message -- [ $other ]")
+  }
+}
+
 
 class BlockingActor extends Actor {
 
   val log = LoggerFactory.getLogger( getClass )
-
-  val neverEndingPromise = Promise[String]()
-  val neverEndingFuture = neverEndingPromise.future
+  val blocked = context.system.actorOf(Main.blockedProps)
+  //val neverEndingPromise = Promise[String]()
+  //val neverEndingFuture = neverEndingPromise.future
 
   def receive: Receive = {
     case "block" =>
       val s = sender
       log.info(s"going to block forever...")
-      Await.result(neverEndingFuture, Duration.Inf)
+      implicit val timeout = Timeout(10.hours)
+      val blockedFuture = blocked ? "hello"
+      Await.result(blockedFuture, Duration.Inf)
       log.error(s"and how is that???")
       s ! "unblocked"
 
@@ -64,10 +85,16 @@ object Main {
 
   val echoProps = Props( new EchoActor )
   val blockingProps = Props( new BlockingActor )
+  val blockedProps = Props( new BlockedActor )
   val routerProps = Props( new Router )
 
   val system = ActorSystem.create("blockers")
 
   val router = system.actorOf( routerProps )
 
+  def main(args: Array[String]):Unit = {
+    for(_ <- 1 to 1000) yield {
+      router ! "new"
+    }
+  }
 }
