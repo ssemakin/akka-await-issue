@@ -1,4 +1,4 @@
-name := "akka-await-issue"
+name := "akka-cautions-demo"
 
 version := "1.0"
 
