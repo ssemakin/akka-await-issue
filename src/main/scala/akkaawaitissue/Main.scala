@@ -7,16 +7,15 @@ import org.slf4j.LoggerFactory
 import scala.concurrent.duration._
 import scala.concurrent.{Promise, Await}
 
-class BlockedActor extends Actor {
+class HeavyResourceProducerActor extends Actor {
 
   val log = LoggerFactory.getLogger( getClass )
 
- 
   def receive: Receive = {
-    case "hello" =>
+    case "produce" =>
       val s = sender
       Thread.sleep(10 * 60 * 1000)
-      s ! "hi"
+      s ! "done"
 
     case other =>
       log.info(s"unknown message -- [ $other ]")
@@ -24,22 +23,20 @@ class BlockedActor extends Actor {
 }
 
 
-class BlockingActor extends Actor {
+class HeavyResourceAwaitingActor extends Actor {
 
+  implicit val timeout = Timeout(10.hours)
   val log = LoggerFactory.getLogger( getClass )
-  val blocked = context.system.actorOf(Main.blockedProps)
-  //val neverEndingPromise = Promise[String]()
-  //val neverEndingFuture = neverEndingPromise.future
+  val blocked = context.system.actorOf(Main.heavyResourceProps)
 
   def receive: Receive = {
-    case "block" =>
+    case "consume" =>
       val s = sender
-      log.info(s"going to block forever...")
-      implicit val timeout = Timeout(10.hours)
-      val blockedFuture = blocked ? "hello"
+      log.info(s"going to block...")
+      val blockedFuture = blocked ? "produce"
       Await.result(blockedFuture, Duration.Inf)
-      log.error(s"and how is that???")
-      s ! "unblocked"
+      log.info(s"awaiting completed")
+      s ! "consumed"
 
     case other =>
       log.info(s"unknown message -- [ $other ]")
@@ -65,14 +62,15 @@ class Router extends Actor {
   def receive: Receive = {
     case "new" =>
       log.info(s"adding another blocker (current total: ${blockers.size})...")
-      val blocker = context.system.actorOf(Main.blockingProps)
-      blocker ! "block"
+      val blocker = context.system.actorOf(Main.awaitingProps)
+      blocker ! "consume"
       blockers = blockers + blocker
+      log.info(s"added (current total: ${blockers.size})...")
 
     case "show" =>
       log.info(s"current blockers (total: ${blockers.size}) -- [ $blockers ]")
 
-    case "unblocked" =>
+    case "consumed" =>
       blockers = blockers - sender
 
     case other =>
@@ -84,17 +82,12 @@ class Router extends Actor {
 object Main {
 
   val echoProps = Props( new EchoActor )
-  val blockingProps = Props( new BlockingActor )
-  val blockedProps = Props( new BlockedActor )
+  val awaitingProps = Props( new HeavyResourceAwaitingActor )
+  val heavyResourceProps = Props( new HeavyResourceProducerActor )
   val routerProps = Props( new Router )
 
-  val system = ActorSystem.create("blockers")
+  val system = ActorSystem.create("blockers-demo")
 
   val router = system.actorOf( routerProps )
 
-  def main(args: Array[String]):Unit = {
-    for(_ <- 1 to 1000) yield {
-      router ! "new"
-    }
-  }
 }
